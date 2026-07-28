@@ -7,30 +7,63 @@ Original file is located at
     https://colab.research.google.com/drive/13iGKvf6Ns7atKXHd6_MTTsjcqD_ZGiMG
 """
 
-# !pip install h3 pandas
+#!pip install h3 pandas geojson pydeck
 
 import os
 import pandas as pd
 import h3
+import geojson
+import pydeck as pdk
 
-# Definição do diretório - Pasta atual onde o notebook está rodando
-base_path = './'
 
-# Carregamento dos datasets brutos
-orders = pd.read_csv(os.path.join(base_path, 'olist_orders_dataset.csv'))
-items = pd.read_csv(os.path.join(base_path, 'olist_order_items_dataset.csv'))
-customers = pd.read_csv(os.path.join(base_path, 'olist_customers_dataset.csv'))
-geolocation = pd.read_csv(os.path.join(base_path, 'olist_geolocation_dataset.csv'))
+# Helper Functions
 
-# Filtragem de clientes no Rio Grande do Sul
+def export_h3_geojson(df, output_path):
+    """Converte os índices H3 do DataFrame em polígonos GeoJSON."""
+    features = []
+    for _, row in df.iterrows():
+        cell = row['h3_index']
+        boundary = h3.cell_to_boundary(cell)
+
+        # Padrão GeoJSON: [longitude, latitude] e anel fechado
+        coords = [[lng, lat] for lat, lng in boundary]
+        coords.append(coords[0])
+
+        feature = geojson.Feature(
+            geometry=geojson.Polygon([coords]),
+            properties={'h3_index': cell}
+        )
+        features.append(feature)
+
+    collection = geojson.FeatureCollection(features)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        geojson.dump(collection, f)
+
+
+
+# 1. Datasets
+
+# Altere a variável abaixo para o caminho da sua pasta
+DATA_DIR = './'
+
+orders = pd.read_csv(os.path.join(DATA_DIR, 'olist_orders_dataset.csv'))
+items = pd.read_csv(os.path.join(DATA_DIR, 'olist_order_items_dataset.csv'))
+customers = pd.read_csv(os.path.join(DATA_DIR, 'olist_customers_dataset.csv'))
+geolocation = pd.read_csv(os.path.join(DATA_DIR, 'olist_geolocation_dataset.csv'))
+
+
+# 2. Filtragem Regional (RS) e Merges
+
 customers['customer_state'] = customers['customer_state'].astype(str).str.upper().str.strip()
 customers['customer_zip_code_prefix'] = pd.to_numeric(customers['customer_zip_code_prefix'], errors='coerce')
 
-is_rs_state = customers['customer_state'] == 'RS'
-is_rs_cep = (customers['customer_zip_code_prefix'] >= 90000) & (customers['customer_zip_code_prefix'] <= 99999)
-customers_rs = customers[is_rs_state | is_rs_cep].copy()
+# Filtra clientes do RS por sigla de estado ou faixa de CEP (90000-99999)
+is_rs = (customers['customer_state'] == 'RS') | (
+    (customers['customer_zip_code_prefix'] >= 90000) & (customers['customer_zip_code_prefix'] <= 99999)
+)
+customers_rs = customers[is_rs].copy()
 
-# Junção de pedidos e consolidação de valores por pedido
+# Merges de pedidos e valores consolidados por pedido
 df_rs = orders.merge(customers_rs, on='customer_id', how='inner')
 
 items_agg = items.groupby('order_id').agg({
@@ -40,13 +73,13 @@ items_agg = items.groupby('order_id').agg({
 
 df_rs = df_rs.merge(items_agg, on='order_id', how='inner')
 
-# Filtragem e agregação geográfica por CEP
+# Agregação das coordenadas médias por prefixo de CEP
 geolocation['geolocation_zip_code_prefix'] = pd.to_numeric(geolocation['geolocation_zip_code_prefix'], errors='coerce')
 
 geo_valid = geolocation[
     (geolocation['geolocation_lat'] >= -34.0) & (geolocation['geolocation_lat'] <= -26.0) &
     (geolocation['geolocation_lng'] >= -58.0) & (geolocation['geolocation_lng'] <= -49.0)
-].copy()
+]
 
 geo_agg = geo_valid.groupby('geolocation_zip_code_prefix').agg({
     'geolocation_lat': 'mean',
@@ -60,7 +93,9 @@ df_rs = df_rs.merge(
     how='inner'
 )
 
-# Cálculo de métricas temporais e indicadores de atraso
+
+# 3. Métricas Operacionais de Entrega
+
 df_rs['order_delivered_customer_date'] = pd.to_datetime(df_rs['order_delivered_customer_date'])
 df_rs['order_estimated_delivery_date'] = pd.to_datetime(df_rs['order_estimated_delivery_date'])
 df_rs['order_purchase_timestamp'] = pd.to_datetime(df_rs['order_purchase_timestamp'])
@@ -69,15 +104,20 @@ df_rs['atraso_dias'] = (df_rs['order_delivered_customer_date'] - df_rs['order_es
 df_rs['tempo_entrega_dias'] = (df_rs['order_delivered_customer_date'] - df_rs['order_purchase_timestamp']).dt.total_seconds() / 86400
 df_rs['is_atrasado'] = (df_rs['atraso_dias'] > 0).astype(int)
 
-# Indexação espacial H3 (Resolução 7)
-df_rs['h3_index'] = [h3.latlng_to_cell(lat, lng, 7) for lat, lng in zip(df_rs['geolocation_lat'], df_rs['geolocation_lng'])]
 
-# Coordenadas do centroide de cada célula H3
+# 4. Indexação Espacial H3 (Uber Resolução 7)
+
+df_rs['h3_index'] = [
+    h3.latlng_to_cell(lat, lng, 7)
+    for lat, lng in zip(df_rs['geolocation_lat'], df_rs['geolocation_lng'])
+]
+
+# Centroides das células para referência
 coords = [h3.cell_to_latlng(cell) for cell in df_rs['h3_index']]
 df_rs['h3_lat'] = [c[0] for c in coords]
 df_rs['h3_lng'] = [c[1] for c in coords]
 
-# Agregação final por hexágono H3
+# Sumarização por hexágono H3
 h3_summary = df_rs.groupby('h3_index').agg(
     total_pedidos=('order_id', 'count'),
     media_atraso_dias=('atraso_dias', 'mean'),
@@ -91,13 +131,51 @@ h3_summary = df_rs.groupby('h3_index').agg(
 
 h3_summary['taxa_atraso_pct'] = h3_summary['taxa_atraso'] * 100
 
-# Exportação do dataset tratado no diretório atual
-output_file = os.path.join(base_path, 'logiroute_rs_h3_summary.csv')
-h3_summary.to_csv(output_file, index=False, decimal=',', encoding='utf-8-sig')
 
-# Logs de execução
-print(f"Processamento concluído. Arquivo salvo em: {output_file}")
-print(f"Total de células H3 mapeadas: {len(h3_summary)}")
+# 5. Exportação dos Outputs (CSV, GeoJSON e HTML 3D)
 
-# Visualização das primeiras linhas do output
+# 1. CSV
+csv_out = 'logiroute_rs_h3_summary.csv'
+h3_summary.to_csv(csv_out, index=False, decimal=',', encoding='utf-8-sig')
+print(f"CSV exportado: {csv_out}")
+
+# 2. GeoJSON
+geojson_out = 'h3_rs_cells.geojson'
+export_h3_geojson(h3_summary, geojson_out)
+print(f"GeoJSON exportado: {geojson_out}")
+
+# 3. Mapa 3D (Pydeck)
+layer = pdk.Layer(
+    "H3HexagonLayer",
+    h3_summary,
+    pickable=True,
+    stroked=True,
+    filled=True,
+    extruded=True,
+    get_hexagon="h3_index",
+    get_fill_color="[255 - (taxa_atraso_pct * 2.5), 50, taxa_atraso_pct * 2.5, 180]",
+    get_elevation="faturamento_total / 10",
+    elevation_scale=5,
+)
+
+view_state = pdk.ViewState(
+    latitude=-30.0,
+    longitude=-53.0,
+    zoom=6,
+    pitch=45
+)
+
+r = pdk.Deck(
+    layers=[layer],
+    initial_view_state=view_state,
+    tooltip={"text": "H3: {h3_index}\nPedidos: {total_pedidos}\nAtraso: {taxa_atraso_pct}%"}
+)
+
+html_out = "h3_rs_interactive_map.html"
+r.to_html(html_out)
+print(f"Mapa 3D exportado: {html_out}")
+
+print(f"\nConcluído. Total de células H3 mapeadas no RS: {len(h3_summary)}")
+
+# Prévia dos dados
 h3_summary.head()
