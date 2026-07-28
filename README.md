@@ -127,24 +127,6 @@ Resumo CSV      GeoJSON H3         Visualização 3D
 * **Pydeck**
 * **Power BI**
 
----
-
-# Estrutura do repositório
-
-```text
-├── logiroute_rs_fleet_analytics.py
-├── logiroute_rs_h3_summary.csv
-├── h3_rs_cells.geojson
-├── h3_rs_interactive_map.html
-└── README.md
-```
-
-| Arquivo                           | Descrição                                               |
-| --------------------------------- | ------------------------------------------------------- |
-| `logiroute_rs_fleet_analytics.py` | Pipeline completo de processamento e agregação espacial |
-| `logiroute_rs_h3_summary.csv`     | Indicadores agregados por célula H3                     |
-| `h3_rs_cells.geojson`             | Geometria das células H3                                |
-| `h3_rs_interactive_map.html`      | Visualização interativa em 3D                           |
 
 ---
 
@@ -206,6 +188,6 @@ Este projeto reúne conhecimentos em:
 
 **Guilherme Cardoso**
 
-Analista de Dados Geoespaciais | Especialista em Geoprocessamento | Pós-graduando em Inteligência Artificial aplicada às Geotecnologias
+Analista de Dados Geoespaciais | Especialista em Geoprocessamento 
 
 Sugestões, melhorias e contribuições são sempre bem-vindas.
